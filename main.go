@@ -92,18 +92,21 @@ func main() {
             },
         },
     }
-    numWorkers := 10
-    i := NewInterpreter(s, numWorkers)
+    //numWorkers := 10
+    //i := NewInterpreter(s, numWorkers)
+    i := NewSingleThreadedInterpreter(s)
+    l := i.fresh()
+    r := i.fresh()
     q := []process{
         {functor:"sum", args: []expression{
-            list{head:number(1), tail:variable(0)}, variable(1),
+            list{head:number(1), tail:l}, r,
         }},
         {functor:":=", args: []expression{
-            variable(0), list{head:number(2), tail: list{head:number(3), tail:emptylist}},
+            l, list{head:number(2), tail: list{head:number(3), tail:emptylist}},
         }},
     }
     //res := i.interpret(q)
     res := i.interpretSinglethreaded(q)
-    r := walk(res, variable(1))
-    fmt.Printf("R = %s\n", r.PrintExpression())
+    out := walk(res, r)
+    fmt.Printf("R = %s\n", out.PrintExpression())
 }

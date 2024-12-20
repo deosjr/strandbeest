@@ -15,6 +15,7 @@ An interpreter consists of the following goroutines:
 
 type Interpreter struct {
     varcounter int64
+    fresh func() variable
     numWorkers int
     program []rule
     pool []process
@@ -25,6 +26,13 @@ func NewInterpreter(program []rule, numWorkers int) *Interpreter {
     return &Interpreter{
         numWorkers: numWorkers,
         program: program,
+    }
+}
+
+func NewSingleThreadedInterpreter(program []rule) *Interpreter {
+    return &Interpreter{
+        program: program,
+        fresh: freshFunc(0),
     }
 }
 
@@ -49,7 +57,7 @@ func (i *Interpreter) interpretSinglethreaded(initial []process) bindings {
             continue
         }
         rules := i.getPossibleRules(p)
-        theta, r1, ok := reduce(globalBindings, p, rules)
+        theta, r1, ok := i.reduce(globalBindings, p, rules)
         if !ok {
             i.pool = append(i.pool, p)
             continue
@@ -90,25 +98,50 @@ func (i *Interpreter) interpret(initial []process) bindings {
     }
     // todo: deadlock detection
     // todo: different halt condition, this might happen halfway work being done
-    for len(i.pool) > 0 {
-        p := i.getProcess()
-        if p.isPredefined() {
-            // todo: send the result of execute to handler?
-            i.execute(globalBindings, p)
+    workInProgress := 0
+    for {
+        if len(i.pool) == 0 {
+            if workInProgress == 0 {
+                break
+            }
+            result := <-outCh
+            i.handleResult(result)
+            workInProgress--
             continue
         }
-        rules := i.getPossibleRules(p)
-        // todo: think about how to pass bindings around
-        // possible race condition: 
-        // - one reduce starts reading from bindings
-        // - handling process updates bindings halfway
-        // conclusion: have to somehow pass copies/nested references
-        // lets start with ugly/slow map copies and go from there
-        // note: this race can still happen! handler will have to check and reject solutions?
-        b := copyBindings(globalBindings)
-        inCh <- work{b, p, rules}
+        select {
+        case result := <-outCh:
+            i.handleResult(result)
+            workInProgress--
+        default:
+            i.sendWork(globalBindings, inCh)
+            workInProgress++
+        }
     }
     return globalBindings
+}
+
+func (i *Interpreter) handleResult(res result) {
+
+}
+
+func (i *Interpreter) sendWork(gb bindings, inCh chan work) {
+    p := i.getProcess()
+    if p.isPredefined() {
+        // todo: send the result of execute to handler?
+        i.execute(gb, p)
+        return
+    }
+    rules := i.getPossibleRules(p)
+    // todo: think about how to pass bindings around
+    // possible race condition: 
+    // - one reduce starts reading from bindings
+    // - handling process updates bindings halfway
+    // conclusion: have to somehow pass copies/nested references
+    // lets start with ugly/slow map copies and go from there
+    // note: this race can still happen! handler will have to check and reject solutions?
+    b := copyBindings(gb)
+    inCh <- work{b, p, rules}
 }
 
 func (i *Interpreter) putProcess(p process) {
@@ -172,6 +205,7 @@ func (i *Interpreter) getPossibleRules(p process) []rule {
 }
 
 func workReduce(inCh <-chan work, outCh chan<- result) {
+/*
     for w := range inCh {
         b, r, ok := reduce(w.b, w.p, w.rules)
         if !ok {
@@ -182,14 +216,15 @@ func workReduce(inCh <-chan work, outCh chan<- result) {
         //body := spawnBody(w.b, b, r)
         outCh <- result{b:b, p:w.p, body:body}
     }
+*/
 }
 
-func reduce(b bindings, p process, rules []rule) (bindings, rule, bool) {
+func (i *Interpreter) reduce(b bindings, p process, rules []rule) (bindings, rule, bool) {
     rand.Shuffle(len(rules), func(i, j int) {
 	    rules[i], rules[j] = rules[j], rules[i]
     })
     for _, r := range rules {
-        r1 := freshCopy(r)
+        r1 := i.freshCopy(r)
         m, ok := cmatch(b, p, r1)
         if !ok {
             continue
@@ -199,40 +234,45 @@ func reduce(b bindings, p process, rules []rule) (bindings, rule, bool) {
     return nil, rule{}, false
 }
 
-// todo: replace this with a proper 'global' var counter!
-var vars int64 = 2 // starting vars in initial processes count
-// replace each variable in the rule template with a fresh unbound var
-func freshCopy(r rule) rule {
-    b := bindings{}
-    body := make([]process, len(r.body))
-    for i:=0; i<len(r.body); i++ {
-        body[i] = replaceFresh(b, r.body[i])
+func freshFunc(start int64) func() variable {
+    return func() variable {
+        v := variable(start)
+        start += 1
+        return v
     }
-    return rule{ head: replaceFresh(b, r.head), body: body }
 }
 
-func replaceFresh(b bindings, p process) process {
+// replace each variable in the rule template with a fresh unbound var
+func (i *Interpreter) freshCopy(r rule) rule {
+    b := bindings{}
+    body := make([]process, len(r.body))
+    for n:=0; n<len(r.body); n++ {
+        body[n] = i.replaceFresh(b, r.body[n])
+    }
+    return rule{ head: i.replaceFresh(b, r.head), body: body }
+}
+
+func (i *Interpreter) replaceFresh(b bindings, p process) process {
     args := make([]expression, len(p.args))
-    for i:=0; i<len(p.args); i++ {
-        args[i] = replaceFreshExp(b, p.args[i])
+    for n:=0; n<len(p.args); n++ {
+        args[n] = i.replaceFreshExp(b, p.args[n])
     }
     return process{ functor: p.functor, args: args }
 }
 
-func replaceFreshExp(b bindings, e expression) expression {
+func (i *Interpreter) replaceFreshExp(b bindings, e expression) expression {
     if v, ok := e.(variable); ok {
         if ev, alreadyReplaced := b[v]; alreadyReplaced {
             return ev
         }
-        newv := variable(vars)
+        newv := i.fresh()
         b[v] = newv
-        vars++
         return newv
     }
     if l, ok := e.(list); ok {
         return list{
-            head: replaceFreshExp(b, l.head),
-            tail: replaceFreshExp(b, l.tail),
+            head: i.replaceFreshExp(b, l.head),
+            tail: i.replaceFreshExp(b, l.tail),
         }
     }
     return e

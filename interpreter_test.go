@@ -69,18 +69,19 @@ func TestCMatch(t *testing.T) {
 }
 
 func TestInterpretSingleThreaded(t *testing.T) {
-    i := NewInterpreter(templateProgram, 1)
+    i := NewSingleThreadedInterpreter(templateProgram)
+    l, r := i.fresh(), i.fresh()
     q := []process{
         {functor:"sum", args: []expression{
-            list{head:number(1), tail:variable(0)}, variable(1),
+            list{head:number(1), tail:l}, r,
         }},
         {functor:":=", args: []expression{
-            variable(0), list{head:number(2), tail: list{head:number(3), tail:emptylist}},
+            l, list{head:number(2), tail: list{head:number(3), tail:emptylist}},
         }},
     }
     res := i.interpretSinglethreaded(q)
-    r := walk(res, variable(1))
-    if r != number(6) {
-        t.Fatalf("expected 6 but got %s", r)
+    got := walk(res, r)
+    if got != number(6) {
+        t.Fatalf("expected 6 but got %s", got)
     }
 }
