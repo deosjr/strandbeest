@@ -3,19 +3,19 @@ package main
 import (
     "fmt"
     "math/rand/v2"
+    "sync"
 )
 
 /*
 An interpreter consists of the following goroutines:
 - the main interpreter routine, adding processes to pool
-- the handler routine listening to all of the results of reduce and updating bindings
-- the var routine issuing a constant buffer of fresh variables
+and listening to all of the results of reduce, updating bindings
 - numWorkers worker routines running reduce in parallel
 */
 
 type Interpreter struct {
+    sync.Mutex
     varcounter int64
-    fresh func() variable
     numWorkers int
     program []rule
     pool []process
@@ -32,15 +32,7 @@ func NewInterpreter(program []rule, numWorkers int) *Interpreter {
 func NewSingleThreadedInterpreter(program []rule) *Interpreter {
     return &Interpreter{
         program: program,
-        fresh: freshFunc(0),
     }
-}
-
-// todo: interpeter buffers new vars on a channel for global consumption
-func (i *Interpreter) newVariable() variable {
-    v := variable(i.varcounter)
-    i.varcounter++
-    return v
 }
 
 func (i *Interpreter) interpretSinglethreaded(initial []process) bindings {
@@ -86,18 +78,14 @@ type result struct {
 func (i *Interpreter) interpret(initial []process) bindings {
     inCh := make(chan work, i.numWorkers)
     outCh := make(chan result, i.numWorkers)
-    //varCh := make(chan variable, i.numWorkers)
-    //go handler(outCh)
-    //go i.vars(varCh)
     globalBindings := bindings{}
     for n:=0; n<i.numWorkers; n++ {
-        go workReduce(inCh, outCh)
+        go workReduce(inCh, outCh, i.fresh)
     }
     for _, p := range initial {
         i.putProcess(p)
     }
     // todo: deadlock detection
-    // todo: different halt condition, this might happen halfway work being done
     workInProgress := 0
     for {
         if len(i.pool) == 0 {
@@ -114,7 +102,22 @@ func (i *Interpreter) interpret(initial []process) bindings {
             i.handleResult(result)
             workInProgress--
         default:
-            i.sendWork(globalBindings, inCh)
+            p := i.getProcess()
+            if p.isPredefined() {
+                // todo: send the result of execute to handler
+                i.execute(globalBindings, p)
+                continue
+            }
+            rules := i.getPossibleRules(p)
+            // todo: think about how to pass bindings around
+            // possible race condition: 
+            // - one reduce starts reading from bindings
+            // - handling process updates bindings halfway
+            // conclusion: have to somehow pass copies/nested references
+            // lets start with ugly/slow map copies and go from there
+            // note: this race can still happen! handler will have to check and reject solutions?
+            b := copyBindings(globalBindings)
+            inCh <- work{b, p, rules}
             workInProgress++
         }
     }
@@ -122,26 +125,7 @@ func (i *Interpreter) interpret(initial []process) bindings {
 }
 
 func (i *Interpreter) handleResult(res result) {
-
-}
-
-func (i *Interpreter) sendWork(gb bindings, inCh chan work) {
-    p := i.getProcess()
-    if p.isPredefined() {
-        // todo: send the result of execute to handler?
-        i.execute(gb, p)
-        return
-    }
-    rules := i.getPossibleRules(p)
-    // todo: think about how to pass bindings around
-    // possible race condition: 
-    // - one reduce starts reading from bindings
-    // - handling process updates bindings halfway
-    // conclusion: have to somehow pass copies/nested references
-    // lets start with ugly/slow map copies and go from there
-    // note: this race can still happen! handler will have to check and reject solutions?
-    b := copyBindings(gb)
-    inCh <- work{b, p, rules}
+    // todo
 }
 
 func (i *Interpreter) putProcess(p process) {
@@ -204,7 +188,7 @@ func (i *Interpreter) getPossibleRules(p process) []rule {
     return candidates
 }
 
-func workReduce(inCh <-chan work, outCh chan<- result) {
+func workReduce(inCh <-chan work, outCh chan<- result, fresh func() variable) {
 /*
     for w := range inCh {
         b, r, ok := reduce(w.b, w.p, w.rules)
@@ -234,12 +218,12 @@ func (i *Interpreter) reduce(b bindings, p process, rules []rule) (bindings, rul
     return nil, rule{}, false
 }
 
-func freshFunc(start int64) func() variable {
-    return func() variable {
-        v := variable(start)
-        start += 1
-        return v
-    }
+func (i *Interpreter) fresh() variable {
+    i.Lock()
+    v := variable(i.varcounter)
+    i.varcounter += 1
+    i.Unlock()
+    return v
 }
 
 // replace each variable in the rule template with a fresh unbound var
