@@ -92,9 +92,9 @@ func main() {
             },
         },
     }
-    //numWorkers := 10
-    //i := NewInterpreter(s, numWorkers)
-    i := NewSingleThreadedInterpreter(s)
+    numWorkers := 10
+    i := NewInterpreter(s, numWorkers)
+    //i := NewSingleThreadedInterpreter(s)
     l := i.fresh()
     r := i.fresh()
     q := []process{
@@ -105,8 +105,8 @@ func main() {
             l, list{head:number(2), tail: list{head:number(3), tail:emptylist}},
         }},
     }
-    //res := i.interpret(q)
-    res := i.interpretSinglethreaded(q)
+    res := i.interpret(q)
+    //res := i.interpretSinglethreaded(q)
     out := walk(res, r)
     fmt.Printf("R = %s\n", out.PrintExpression())
 }

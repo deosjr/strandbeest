@@ -43,8 +43,13 @@ func (i *Interpreter) interpretSinglethreaded(initial []process) bindings {
     for len(i.pool) > 0 {
         p := i.getProcess()
         if p.isPredefined() {
-            if ok := i.execute(globalBindings, p); !ok {
+            theta, suspend := i.execute(globalBindings, p)
+            if suspend {
                 i.pool = append(i.pool, p)
+                continue
+            }
+            for k, v := range theta {
+                globalBindings[k] = v 
             }
             continue
         }
@@ -66,13 +71,13 @@ func (i *Interpreter) interpretSinglethreaded(initial []process) bindings {
 type work struct {
     b bindings
     p process
-    rules []rule
 }
 
 type result struct {
     b bindings
     p process
     body []process
+    success bool
 }
 
 func (i *Interpreter) interpret(initial []process) bindings {
@@ -80,7 +85,7 @@ func (i *Interpreter) interpret(initial []process) bindings {
     outCh := make(chan result, i.numWorkers)
     globalBindings := bindings{}
     for n:=0; n<i.numWorkers; n++ {
-        go workReduce(inCh, outCh, i.fresh)
+        go i.workReduce(inCh, outCh)
     }
     for _, p := range initial {
         i.putProcess(p)
@@ -89,26 +94,36 @@ func (i *Interpreter) interpret(initial []process) bindings {
     workInProgress := 0
     for {
         if len(i.pool) == 0 {
+            // no more work to schedule
             if workInProgress == 0 {
+                // and not awaiting any scheduled work: we are done
+                close(inCh)
+                close(outCh)
                 break
             }
+            // await work result
             result := <-outCh
-            i.handleResult(result)
+            i.handleResult(globalBindings, result)
             workInProgress--
             continue
         }
+        // try to get work result, otherwise schedule more work
         select {
         case result := <-outCh:
-            i.handleResult(result)
+            i.handleResult(globalBindings, result)
             workInProgress--
         default:
             p := i.getProcess()
             if p.isPredefined() {
-                // todo: send the result of execute to handler
-                i.execute(globalBindings, p)
+                theta, suspend := i.execute(globalBindings, p)
+                if suspend {
+                    i.putProcess(p)
+                    continue
+                }
+                outCh <- result{b: theta, p:p, success:true}
+                workInProgress++
                 continue
             }
-            rules := i.getPossibleRules(p)
             // todo: think about how to pass bindings around
             // possible race condition: 
             // - one reduce starts reading from bindings
@@ -117,15 +132,25 @@ func (i *Interpreter) interpret(initial []process) bindings {
             // lets start with ugly/slow map copies and go from there
             // note: this race can still happen! handler will have to check and reject solutions?
             b := copyBindings(globalBindings)
-            inCh <- work{b, p, rules}
+            inCh <- work{b, p}
             workInProgress++
         }
     }
     return globalBindings
 }
 
-func (i *Interpreter) handleResult(res result) {
-    // todo
+// todo: what if two results clash in assignments?
+func (i *Interpreter) handleResult(globalBindings bindings, res result) {
+    if !res.success {
+        i.putProcess(res.p)
+        return
+    }
+    for k, v := range res.b {
+        globalBindings[k] = v
+    }
+    for _, r := range res.body {
+        i.putProcess(r)
+    }
 }
 
 func (i *Interpreter) putProcess(p process) {
@@ -144,7 +169,8 @@ func (i *Interpreter) getProcess() process {
     return p
 }
 
-func (i *Interpreter) execute(b bindings, p process) bool {
+func (i *Interpreter) execute(b bindings, p process) (bindings, bool) {
+    newb := bindings{}
     switch p.functor {
     case ":=":
         // X := Y   % assign Y to X in global bindings
@@ -152,7 +178,7 @@ func (i *Interpreter) execute(b bindings, p process) bool {
         // what if first arg is not a var?
         x := walk(b, p.args[0]).(variable)
         y := walk(b, p.args[1])
-        b[x] = y
+        newb[x] = y
     case "isplus":
         // isplus(X,Y,Z)    % X is Y + Z
         // todo: this might fail/suspend?
@@ -161,16 +187,16 @@ func (i *Interpreter) execute(b bindings, p process) bool {
         y := walk(b, p.args[1])
         z := walk(b, p.args[2])
         if _, isNum := y.(number); !isNum {
-            return false
+            return nil, true
         }
         if _, isNum := z.(number); !isNum {
-            return false
+            return nil, true
         }
-        b[x] = number(y.(number) + z.(number))
+        newb[x] = number(y.(number) + z.(number))
     default:
         panic(fmt.Sprintf("unknown predefined process %s", p.functor))
     }
-    return true
+    return newb, false
 }
 
 // as naive as possible; this can get optimised
@@ -188,19 +214,16 @@ func (i *Interpreter) getPossibleRules(p process) []rule {
     return candidates
 }
 
-func workReduce(inCh <-chan work, outCh chan<- result, fresh func() variable) {
-/*
+func (i *Interpreter) workReduce(inCh <-chan work, outCh chan<- result) {
     for w := range inCh {
-        b, r, ok := reduce(w.b, w.p, w.rules)
+        rules := i.getPossibleRules(w.p)
+        theta, r1, ok := i.reduce(w.b, w.p, rules)
         if !ok {
-            // todo: return process to pool
+            outCh <- result{p:w.p, success:false}
             continue
         }
-        var body []process = r.body
-        //body := spawnBody(w.b, b, r)
-        outCh <- result{b:b, p:w.p, body:body}
+        outCh <- result{b:theta, p:w.p, body:r1.body, success:true}
     }
-*/
 }
 
 func (i *Interpreter) reduce(b bindings, p process, rules []rule) (bindings, rule, bool) {
@@ -260,6 +283,10 @@ func (i *Interpreter) replaceFreshExp(b bindings, e expression) expression {
         }
     }
     return e
+}
+
+func (i *Interpreter) spawnBody() {
+
 }
 
 // assumes functor/arity already matching
