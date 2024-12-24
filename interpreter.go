@@ -285,10 +285,6 @@ func (i *Interpreter) replaceFreshExp(b bindings, e expression) expression {
     return e
 }
 
-func (i *Interpreter) spawnBody() {
-
-}
-
 // assumes functor/arity already matching
 // todo: check guards
 func cmatch(base bindings, p process, r rule) (bindings, bool) {

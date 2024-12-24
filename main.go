@@ -54,44 +54,13 @@ import (
 )
 
 func main() {
-    // variables in rules are numbered by first occurence, starting at 0
-    // actual vars will be assigned during copying of a matched rule with fresh vars
-    s := []rule{
-        {
-            head: process{functor:"sum", args: []expression{
-                variable(0), variable(1),
-            }},
-            body: []process{
-                {functor:"sum1", args: []expression{
-                    variable(0), number(0), variable(1),
-                }},
-            },
-        },
-        {
-            head: process{functor:"sum1", args: []expression{
-                list{head:variable(0), tail:variable(1)}, variable(2), variable(3),
-            }},
-            body: []process{
-                // todo: complex expressions / infix operators that include processes ( is(A1, +(A, X)) )
-                {functor:"isplus", args: []expression{
-                    variable(4), variable(2), variable(0),
-                }},
-                {functor:"sum1", args: []expression{
-                    variable(1), variable(4), variable(3),
-                }},
-            },
-        },
-        {
-            head: process{functor:"sum1", args: []expression{
-                emptylist, variable(0), variable(1),
-            }},
-            body: []process{
-                {functor:":=", args: []expression{
-                    variable(1), variable(0),
-                }},
-            },
-        },
-    }
+    rule1, _, _ := parseRule([]string{"sum", "(", "L", ",", "Sum", ")", ":-", "sum1", "(", "L", ",", "0", ",", "Sum", ")", "."})
+    // todo: complex expressions / infix operators that include processes ( is(A1, +(A, X)) )
+    rule2, _, _ := parseRule([]string{"sum1", "(", "[", "X", "|", "Xs", "]", ",", "A", ",", "Sum", ")", ":-",
+        "isplus", "(", "A1", ",", "A", ",", "X", ")", ",",
+        "sum1", "(", "Xs", ",", "A1", ",", "Sum", ")", "."})
+    rule3, _, _ := parseRule([]string{"sum1", "(", "[", "]", ",", "A", ",", "Sum", ")", ":-", ":=", "(", "Sum", ",", "A", ")", "."})
+    s := []rule{ rule1, rule2, rule3 }
     numWorkers := 10
     i := NewInterpreter(s, numWorkers)
     //i := NewSingleThreadedInterpreter(s)
