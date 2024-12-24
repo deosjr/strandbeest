@@ -38,6 +38,11 @@ func TestParseExpression(t *testing.T) {
             wantN:  3,
         },
         {
+            tokens: []string{"[", "2", ",", "3", "]"},
+            want:   list{head: number(2), tail:list{head:number(3), tail: emptylist}},
+            wantN:  5,
+        },
+        {
             tokens: []string{"[", "X", "|", "Xs", "]"},
             want:   list{head: variable(0), tail: variable(1)},
             wantN:  5,
@@ -76,6 +81,20 @@ func TestParseProcess(t *testing.T) {
             tokens: []string{"foo", "(", "3", ")"},
             want:   process{functor:"foo", args:[]expression{number(3)}},
             wantN:  4,
+        },
+        {
+            tokens: []string{"sum", "(", "[", "1", "|", "L", "]", ",", "R", ")"},
+            want:   process{functor:"sum", args:[]expression{
+                list{head:number(1), tail:variable(0)}, variable(1),
+            }},
+            wantN:  10,
+        },
+        {
+            tokens: []string{":=", "(", "L", ",", "[", "2", ",", "3", "]", ")"},
+            want:   process{functor:":=", args:[]expression{
+                variable(0), list{head:number(2), tail:list{head:number(3), tail:emptylist}},
+            }},
+            wantN:  10,
         },
     }{
         if tt.b == nil {

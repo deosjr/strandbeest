@@ -114,7 +114,7 @@ func parseList(b map[string]variable, tokens []string) (expression, int, error) 
         }
         head = append(head, h)
         consumed += n
-        if tokens[n] != "," {
+        if tokens[consumed] != "," {
             break 
         }
         consumed++

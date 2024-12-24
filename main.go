@@ -63,19 +63,12 @@ func main() {
     s := []rule{ rule1, rule2, rule3 }
     numWorkers := 10
     i := NewInterpreter(s, numWorkers)
-    //i := NewSingleThreadedInterpreter(s)
-    l := i.fresh()
-    r := i.fresh()
-    q := []process{
-        {functor:"sum", args: []expression{
-            list{head:number(1), tail:l}, r,
-        }},
-        {functor:":=", args: []expression{
-            l, list{head:number(2), tail: list{head:number(3), tail:emptylist}},
-        }},
-    }
+    b := map[string]variable{}
+    process1, _, _ := parseProcess(b, []string{"sum", "(", "[", "1", "|", "L", "]", ",", "R", ")"})
+    process2, _, _ := parseProcess(b, []string{":=", "(", "L", ",", "[", "2", ",", "3", "]", ")"})
+    r := b["R"]
+    q := []process{ process1, process2 }
     res := i.interpret(q)
-    //res := i.interpretSinglethreaded(q)
     out := walk(res, r)
     fmt.Printf("R = %s\n", out.PrintExpression())
 }
