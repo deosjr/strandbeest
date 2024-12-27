@@ -153,3 +153,25 @@ func TestParseRule(t *testing.T) {
         }
     }
 }
+
+func TestTokenize(t *testing.T) {
+    for i, tt := range []struct{
+        input string
+        want []string
+    }{
+        {
+            input: "",
+            want : []string{},
+        },
+        {
+            input: "sum(L,Sum) :- sum1(L,0,Sum).",
+            want: []string{"sum", "(", "L", ",", "Sum", ")", ":-", "sum1", "(", "L", ",", "0", ",", "Sum", ")", "."},
+        },
+    }{
+        got := tokenize(tt.input)
+        if !reflect.DeepEqual(got, tt.want) {
+            t.Errorf("%d: got %q want %q", i, got, tt.want)
+        }
+    }
+}
+

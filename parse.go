@@ -2,6 +2,7 @@ package main
 
 import (
     "fmt"
+    "strings"
     "strconv"
     "unicode"
 )
@@ -140,6 +141,31 @@ func makeList(head []expression, tail expression) expression {
     out := tail
     for i:=len(head)-1; i>=0; i-- {
         out = list{head:head[i], tail:out}
+    }
+    return out
+}
+
+func tokenize(s string) []string {
+    out := []string{}
+    s = strings.TrimSpace(s)
+    for len(s) > 0 {
+        switch s[:1] {
+        case "(", ")", "[", "]", "|", ",", ".":
+            out = append(out, s[:1])
+            s = s[1:]
+            s = strings.TrimSpace(s)
+            continue
+        }
+        if len(s) > 1 && s[:2] == ":-" {
+            out = append(out, s[:2])
+            s = s[2:]
+            s = strings.TrimSpace(s)
+            continue
+        }
+        i := strings.IndexAny(s, "(),|]")
+        out = append(out, s[:i])
+        s = s[i:]
+        s = strings.TrimSpace(s)
     }
     return out
 }

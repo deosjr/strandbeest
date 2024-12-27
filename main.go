@@ -54,18 +54,16 @@ import (
 )
 
 func main() {
-    rule1, _, _ := parseRule([]string{"sum", "(", "L", ",", "Sum", ")", ":-", "sum1", "(", "L", ",", "0", ",", "Sum", ")", "."})
+    rule1, _, _ := parseRule(tokenize("sum(L,Sum) :- sum1(L,0,Sum)."))
     // todo: complex expressions / infix operators that include processes ( is(A1, +(A, X)) )
-    rule2, _, _ := parseRule([]string{"sum1", "(", "[", "X", "|", "Xs", "]", ",", "A", ",", "Sum", ")", ":-",
-        "isplus", "(", "A1", ",", "A", ",", "X", ")", ",",
-        "sum1", "(", "Xs", ",", "A1", ",", "Sum", ")", "."})
-    rule3, _, _ := parseRule([]string{"sum1", "(", "[", "]", ",", "A", ",", "Sum", ")", ":-", ":=", "(", "Sum", ",", "A", ")", "."})
+    rule2, _, _ := parseRule(tokenize("sum1([X|Xs],A,Sum) :- isplus(A1,A,X), sum1(Xs,A1,Sum)."))
+    rule3, _, _ := parseRule(tokenize("sum1([],A,Sum) :- :=(Sum,A)."))
     s := []rule{ rule1, rule2, rule3 }
     numWorkers := 10
     i := NewInterpreter(s, numWorkers)
     b := map[string]variable{}
-    process1, _, _ := parseProcess(b, []string{"sum", "(", "[", "1", "|", "L", "]", ",", "R", ")"})
-    process2, _, _ := parseProcess(b, []string{":=", "(", "L", ",", "[", "2", ",", "3", "]", ")"})
+    process1, _, _ := parseProcess(b, tokenize("sum([1|L],R)"))
+    process2, _, _ := parseProcess(b, tokenize(":=(L,[2,3])"))
     r := b["R"]
     q := []process{ process1, process2 }
     res := i.interpret(q)
