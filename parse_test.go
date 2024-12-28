@@ -8,42 +8,42 @@ import (
 func TestParseExpression(t *testing.T) {
     for i, tt := range []struct{
         b map[string]variable
-        tokens []string
+        tokens []token
         want expression
         wantN int
         err error
     }{
         {
-            tokens: []string{""},
-            err: syntaxError,
+            tokens: []token{""},
+            err: syntaxError{"not enough tokens to parse expression"},
         },
         {
-            tokens: []string{"3"},
+            tokens: []token{"3"},
             want:   number(3),
             wantN:  1,
         },
         {
-            tokens: []string{"L"},
+            tokens: []token{"L"},
             want:   variable(0),
             wantN:  1,
         },
         {
-            tokens: []string{"[", "]"},
+            tokens: []token{"[", "]"},
             want:   emptylist,
             wantN:  2,
         },
         {
-            tokens: []string{"[", "42", "]"},
+            tokens: []token{"[", "42", "]"},
             want:   list{head: number(42), tail: emptylist},
             wantN:  3,
         },
         {
-            tokens: []string{"[", "2", ",", "3", "]"},
+            tokens: []token{"[", "2", ",", "3", "]"},
             want:   list{head: number(2), tail:list{head:number(3), tail: emptylist}},
             wantN:  5,
         },
         {
-            tokens: []string{"[", "X", "|", "Xs", "]"},
+            tokens: []token{"[", "X", "|", "Xs", "]"},
             want:   list{head: variable(0), tail: variable(1)},
             wantN:  5,
         },
@@ -68,33 +68,47 @@ func TestParseExpression(t *testing.T) {
 func TestParseProcess(t *testing.T) {
     for i, tt := range []struct{
         b map[string]variable
-        tokens []string
+        tokens []token
         want process
         wantN int
         err error
     }{
         {
-            tokens: []string{""},
-            err: syntaxError,
+            tokens: []token{""},
+            err: syntaxError{"not enough tokens to parse process"},
         },
         {
-            tokens: []string{"foo", "(", "3", ")"},
+            tokens: []token{"foo", "(", "3", ")"},
             want:   process{functor:"foo", args:[]expression{number(3)}},
             wantN:  4,
         },
         {
-            tokens: []string{"sum", "(", "[", "1", "|", "L", "]", ",", "R", ")"},
+            tokens: []token{"sum", "(", "[", "1", "|", "L", "]", ",", "R", ")"},
             want:   process{functor:"sum", args:[]expression{
                 list{head:number(1), tail:variable(0)}, variable(1),
             }},
             wantN:  10,
         },
         {
-            tokens: []string{":=", "(", "L", ",", "[", "2", ",", "3", "]", ")"},
+            tokens: []token{":=", "(", "L", ",", "[", "2", ",", "3", "]", ")"},
             want:   process{functor:":=", args:[]expression{
                 variable(0), list{head:number(2), tail:list{head:number(3), tail:emptylist}},
             }},
             wantN:  10,
+        },
+        {
+            tokens: []token{"L", ":=", "42"},
+            want:   process{functor:":=", args:[]expression{
+                variable(0), number(42),
+            }},
+            wantN:  3,
+        },
+        {
+            tokens: []token{"isplus", "(", "A1", ",", "A", ",", "1", ")"},
+            want:   process{functor:"isplus", args:[]expression{
+                variable(0), variable(1), number(1),
+            }},
+            wantN:  8,
         },
     }{
         if tt.b == nil {
@@ -116,17 +130,17 @@ func TestParseProcess(t *testing.T) {
 
 func TestParseRule(t *testing.T) {
     for i, tt := range []struct{
-        tokens []string
+        tokens []token
         want rule
         wantN int
         err error
     }{
         {
-            tokens: []string{""},
-            err: syntaxError,
+            tokens: []token{""},
+            err: syntaxError{"not enough tokens to parse process"},
         },
         {
-            tokens: []string{"sum", "(", "L", ",", "Sum", ")", ":-", "sum1", "(", "L", ",", "0", ",", "Sum", ")", "."},
+            tokens: []token{"sum", "(", "L", ",", "Sum", ")", ":-", "sum1", "(", "L", ",", "0", ",", "Sum", ")", "."},
             want:   rule{
                 head: process{functor:"sum", args: []expression{
                     variable(0), variable(1),
@@ -157,15 +171,23 @@ func TestParseRule(t *testing.T) {
 func TestTokenize(t *testing.T) {
     for i, tt := range []struct{
         input string
-        want []string
+        want []token
     }{
         {
             input: "",
-            want : []string{},
+            want : []token{},
         },
         {
             input: "sum(L,Sum) :- sum1(L,0,Sum).",
-            want: []string{"sum", "(", "L", ",", "Sum", ")", ":-", "sum1", "(", "L", ",", "0", ",", "Sum", ")", "."},
+            want: []token{"sum", "(", "L", ",", "Sum", ")", ":-", "sum1", "(", "L", ",", "0", ",", "Sum", ")", "."},
+        },
+        {
+            input: "L := [2, 3]",
+            want : []token{"L", ":=", "[", "2", ",", "3", "]"},
+        },
+        {
+            input: "A1 is A + X,",
+            want : []token{"A1", "is", "A", "+", "X", ","},
         },
     }{
         got := tokenize(tt.input)

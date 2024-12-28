@@ -54,10 +54,22 @@ import (
 )
 
 func main() {
-    rule1, _, _ := parseRule(tokenize("sum(L,Sum) :- sum1(L,0,Sum)."))
+    rule1, _, err := parseRule(tokenize("sum(L,Sum) :- sum1(L,0,Sum)."))
+    if err != nil {
+        panic(err)
+    }
     // todo: complex expressions / infix operators that include processes ( is(A1, +(A, X)) )
-    rule2, _, _ := parseRule(tokenize("sum1([X|Xs],A,Sum) :- isplus(A1,A,X), sum1(Xs,A1,Sum)."))
-    rule3, _, _ := parseRule(tokenize("sum1([],A,Sum) :- :=(Sum,A)."))
+    rule2, _, err := parseRule(tokenize("sum1([X|Xs],A,Sum) :- isplus(A1,A,X), sum1(Xs,A1,Sum)."))
+    if err != nil {
+        panic(err)
+    }
+    rule3, _, err := parseRule(tokenize("sum1([],A,Sum) :- :=(Sum,A)."))
+    if err != nil {
+        panic(err)
+    }
+    fmt.Printf("%s\n", rule1)
+    fmt.Printf("%s\n", rule2)
+    fmt.Printf("%s\n", rule3)
     s := []rule{ rule1, rule2, rule3 }
     numWorkers := 10
     i := NewInterpreter(s, numWorkers)
@@ -66,6 +78,7 @@ func main() {
     process2, _, _ := parseProcess(b, tokenize(":=(L,[2,3])"))
     r := b["R"]
     q := []process{ process1, process2 }
+    fmt.Printf("%s\n", q)
     res := i.interpret(q)
     out := walk(res, r)
     fmt.Printf("R = %s\n", out.PrintExpression())

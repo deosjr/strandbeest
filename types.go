@@ -2,6 +2,7 @@ package main
 
 import (
     "fmt"
+    "strings"
 )
 
 // some notes:
@@ -45,7 +46,7 @@ func (l list) PrintExpression() string {
     if l.tail == emptylist {
         return fmt.Sprintf("[%s]", l.head.PrintExpression())
     }
-    return fmt.Sprintf("[%s,%s]", l.head.PrintExpression(), l.tail.PrintExpression())
+    return fmt.Sprintf("[%s|%s]", l.head.PrintExpression(), l.tail.PrintExpression())
 }
 
 type process struct {
@@ -59,13 +60,29 @@ func (p process) arity() int {
 
 func (p process) isPredefined() bool {
     // only predefined functors for now
-    return p.functor == ":=" || p.functor == "isplus"
+    return p.functor == ":=" || p.functor == "isplus" || p.functor == "is"
+}
+
+func (p process) String() string {
+    args := []string{}
+    for _, arg := range p.args {
+        args = append(args, arg.PrintExpression())
+    }
+    return fmt.Sprintf("%s(%s)", p.functor, strings.Join(args, ","))
 }
 
 type rule struct {
     head process
     //guard []guard
     body []process
+}
+
+func (r rule) String() string {
+    body := []string{}
+    for _, p := range r.body {
+        body = append(body, p.String())
+    }
+    return fmt.Sprintf("%s :- %s.", r.head, strings.Join(body, ","))
 }
 
 type bindings map[variable]expression
