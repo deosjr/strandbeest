@@ -12,6 +12,42 @@ func (e syntaxError) Error() string {
     return e.msg
 }
 
+func MustParseRules(input string) []rule {
+    tokens := tokenize(input)
+    rules := []rule{}
+    for len(tokens) > 0 {
+        r, n, err := parseRule(tokens)
+        if err != nil {
+            panic(err)
+        }
+        tokens = tokens[n:]
+        rules = append(rules, r)
+    }
+    return rules
+}
+
+func MustParseProcesses(input string) ([]process, map[string]variable) {
+    tokens := tokenize(input)
+    processes := []process{}
+    b := map[string]variable{}
+    for len(tokens) > 0 {
+        p, n, err := parseProcess(b, tokens)
+        if err != nil {
+            panic(err)
+        }
+        processes = append(processes, p)
+        if len(tokens) > n {
+            if tokens[n] != Comma {
+                panic("expected comma")
+            }
+            tokens = tokens[n+1:]
+            continue
+        }
+        tokens = tokens[n:]
+    }
+    return processes, b
+}
+
 // parseRule returns a rule, amount of tokens parsed, and error
 // variables in rules are numbered by first occurence, starting at 0
 // actual vars will be assigned during copying of a matched rule with fresh vars
