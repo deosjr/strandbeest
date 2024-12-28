@@ -139,11 +139,17 @@ func (i *Interpreter) interpret(initial []process) bindings {
     return globalBindings
 }
 
-// todo: what if two results clash in assignments?
 func (i *Interpreter) handleResult(globalBindings bindings, res result) {
     if !res.success {
         i.putProcess(res.p)
         return
+    }
+    for k := range res.b {
+        if _, ok := globalBindings[k]; ok {
+            // single-assignment means if we find a clash, we return the work
+            i.putProcess(res.p)
+            return
+        }
     }
     for k, v := range res.b {
         globalBindings[k] = v
