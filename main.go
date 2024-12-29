@@ -54,7 +54,8 @@ import (
 )
 
 func main() {
-    s := MustParseRules(`sum(L, Sum) :- sum1(L, 0, Sum).
+    s := MustParseRules(`
+    sum(L, Sum) :- sum1(L, 0, Sum).
     sum1([X|Xs], A, Sum) :- 
         isplus(A1, A, X),
         sum1(Xs, A1, Sum).
@@ -67,9 +68,33 @@ func main() {
     numWorkers := 10
     i := NewInterpreter(s, numWorkers)
     q, b := MustParseProcesses("sum([1|L],R), L := [2,3]")
+    // todo: two vars assigned in mustparseprocesses
+    i.fresh()
+    i.fresh()
     r := b["R"]
     fmt.Printf("%s\n", q)
     res := i.interpret(q)
     out := walk(res, r)
+    fmt.Printf("R = %s\n", out.PrintExpression())
+    
+    fmt.Println("-------------------")
+
+    s = MustParseRules(`
+    member(X,[X1|Rest],R) :-
+        X =\= X1 | member(X,Rest,R).
+    member(X,[X1|_],R) :-
+        X == X1 | R := true.
+    member(_, [], R) :- R := false.`)
+    for _, r := range s {
+        fmt.Printf("%s\n", r)
+    }
+    i = NewInterpreter(s, numWorkers)
+    q, b = MustParseProcesses("member(2, [1,2,3], R)")
+    // todo: one var assigned in mustparseprocesses
+    i.fresh()
+    r = b["R"]
+    fmt.Printf("%s\n", q)
+    res = i.interpret(q)
+    out = walk(res, r)
     fmt.Printf("R = %s\n", out.PrintExpression())
 }

@@ -236,11 +236,17 @@ func (i *Interpreter) reduce(b bindings, p process, rules []rule) (bindings, rul
     rand.Shuffle(len(rules), func(i, j int) {
 	    rules[i], rules[j] = rules[j], rules[i]
     })
+Loop:
     for _, r := range rules {
         r1 := i.freshCopy(r)
         m, ok := cmatch(b, p, r1)
         if !ok {
             continue
+        }
+        for _, g := range r1.guard {
+            if !guardMatch(b, m, g) {
+                continue Loop
+            }
         }
         return m, r1, true
     }
@@ -258,11 +264,19 @@ func (i *Interpreter) fresh() variable {
 // replace each variable in the rule template with a fresh unbound var
 func (i *Interpreter) freshCopy(r rule) rule {
     b := bindings{}
+    head := i.replaceFresh(b, r.head)
+    guards := make([]guard, len(r.guard))
+    for n:=0; n<len(r.guard); n++ {
+        guards[n] = guard{ operator: r.guard[n].operator, args: []expression{
+            i.replaceFreshExp(b, r.guard[n].args[0]),
+            i.replaceFreshExp(b, r.guard[n].args[1]),
+        }}
+    }
     body := make([]process, len(r.body))
     for n:=0; n<len(r.body); n++ {
         body[n] = i.replaceFresh(b, r.body[n])
     }
-    return rule{ head: i.replaceFresh(b, r.head), body: body }
+    return rule{ head: head, guard: guards, body: body }
 }
 
 func (i *Interpreter) replaceFresh(b bindings, p process) process {
@@ -292,7 +306,6 @@ func (i *Interpreter) replaceFreshExp(b bindings, e expression) expression {
 }
 
 // assumes functor/arity already matching
-// todo: check guards
 func cmatch(base bindings, p process, r rule) (bindings, bool) {
     updates := bindings{}
     for i:=0; i<p.arity(); i++ {
@@ -301,6 +314,24 @@ func cmatch(base bindings, p process, r rule) (bindings, bool) {
         }
     }
     return updates, true
+}
+
+func guardMatch(base, updates bindings, g guard) bool {
+    u := walk(base, walk(updates, g.args[0]))
+    v := walk(base, walk(updates, g.args[1]))
+    // guard args have to be fully instantiated, otherwise suspend
+    _, uok := u.(variable)
+    _, vok := u.(variable)
+    if uok || vok {
+        return false
+    }
+    switch g.operator {
+    case Equal:
+        return u == v
+    case NotEqual:
+        return u != v
+    }
+    panic("unknown operator in guard match")
 }
 
 func walk(b bindings, e expression) expression {
@@ -317,8 +348,11 @@ func walk(b bindings, e expression) expression {
 
 // unify reads from base bindings and adds to updates in place
 func unify(base, updates bindings, u, v expression) bool {
-    u = walk(updates, walk(base, u))
-    v = walk(updates, walk(base, v))
+    if u == underscore || v == underscore {
+        return true
+    }
+    u = walk(base, walk(updates, u))
+    v = walk(base, walk(updates, v))
     if u == v {
         return true
     }

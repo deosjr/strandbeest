@@ -61,6 +61,11 @@ func parseRule(tokens []token) (rule, int, error) {
         return rule{}, 0, syntaxError{"expected turnstile"}
     }
     consumed := n+1
+    guards, n, err := parseGuards(b, tokens[consumed:])
+    if err != nil {
+        return rule{}, 0, err
+    }
+    consumed += n
     body := []process{}
     for {
         r, n, err := parseProcess(b, tokens[consumed:])
@@ -70,13 +75,43 @@ func parseRule(tokens []token) (rule, int, error) {
         body = append(body, r)
         consumed += n
         if tokens[consumed] == Period {
-            return rule{head:head, body:body}, consumed+1, nil
+            return rule{head:head, guard: guards, body:body}, consumed+1, nil
         }
         if tokens[consumed] != Comma {
             return rule{}, 0, syntaxError{"expected comma"}
         }
         consumed++
     }
+}
+
+// instead of error, just gives up at first unexpected token sequence
+// assumes only binary infix operators for now
+func parseGuards(b map[string]variable, tokens []token) ([]guard, int, error) {
+    var guards []guard
+    consumed := 0
+    for {
+        arg0, n0, err := parseExpression(b, tokens[consumed:])
+        if err != nil {
+            break
+        }
+        op := tokens[consumed+n0]
+        if !op.IsGuard() {
+            break
+        }
+        arg1, n1, err := parseExpression(b, tokens[consumed+n0+1:])
+        if err != nil {
+            break
+        }
+        guards = append(guards, guard{operator:string(op), args: []expression{arg0, arg1}})
+        consumed += n0+1+n1
+    }
+    if len(guards) > 0 {
+        if tokens[consumed] != Commit {
+            return nil, 0, syntaxError{"expected commit '|'"}
+        }
+        consumed += 1
+    }
+    return guards, consumed, nil
 }
 
 // parseProcess returns a process, amount of tokens parsed, and error
@@ -135,8 +170,11 @@ func parseExpression(b map[string]variable, tokens []token) (expression, int, er
     if len(tokens[0]) == 0 {
         return nil, 0, syntaxError{"not enough tokens to parse expression"}
     }
-    if tokens[0] == OpenBracket {
-        return parseList(b, tokens)
+    switch tokens[0] {
+    case OpenBracket: return parseList(b, tokens)
+    case Underscore: return underscore, 1, nil
+    case True: return true_value, 1, nil
+    case False: return false_value, 1, nil
     }
     if tokens[0].IsNumber() {
         return parseNumber(string(tokens[0]))
@@ -144,7 +182,7 @@ func parseExpression(b map[string]variable, tokens []token) (expression, int, er
     if tokens[0].IsVariable() {
         return parseVariable(b, string(tokens[0]))
     }
-    return nil, 0, syntaxError{}
+    return nil, 0, syntaxError{"unknown expression"}
 }
 
 func parseNumber(s string) (number, int, error) {

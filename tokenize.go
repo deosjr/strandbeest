@@ -15,9 +15,14 @@ const (
     Commit = "|"
     Comma = ","
     Period = "."
+    Underscore = "_"
     Turnstile = ":-"
     Assign = ":="
     Is = "is"
+    Equal = "=="
+    NotEqual = "=\\="
+    True = "true"
+    False = "false"
 )
 
 func (t token) IsNumber() bool {
@@ -36,6 +41,10 @@ func (t token) IsOperator() bool {
     return t == Assign || t == Is
 }
 
+func (t token) IsGuard() bool {
+    return t == Equal || t == NotEqual
+}
+
 func tokenize(s string) []token {
     out := []token{}
     s = strings.TrimSpace(s)
@@ -49,6 +58,7 @@ func tokenize(s string) []token {
         case "|": punct = Commit
         case ",": punct = Comma
         case ".": punct = Period
+        case "_": punct = Underscore
         }
         if len(punct) > 0 {
             out = append(out, punct)
@@ -56,11 +66,23 @@ func tokenize(s string) []token {
             s = strings.TrimSpace(s)
             continue
         }
+        if len(s) > 2 {
+            switch s[:3] {
+            case "=\\=": punct = NotEqual
+            }
+            if len(punct) > 0 && strings.IndexAny(s, "\t\n (") == 3 {
+                out = append(out, punct)
+                s = s[3:]
+                s = strings.TrimSpace(s)
+                continue
+            }
+        }
         if len(s) > 1 {
             switch s[:2] {
             case ":-": punct = Turnstile
             case ":=": punct = Assign
             case "is": punct = Is
+            case "==": punct = Equal
             }
             if len(punct) > 0 && strings.IndexAny(s, "\t\n (") == 2 {
                 out = append(out, punct)

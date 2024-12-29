@@ -153,6 +153,23 @@ func TestParseRule(t *testing.T) {
             },
             wantN:  16,
         },
+        {
+            tokens: []token{"member", "(", "X", ",", "[", "X1", "|", "Rest", "]", ",", "R", ")", ":-", "X", "=\\=", "X1", "|", "member", "(", "X", ",", "Rest", ",", "R", ")", "."},
+            want:   rule{
+                head: process{functor:"member", args: []expression{
+                    variable(0), list{head:variable(1), tail:variable(2)}, variable(3),
+                }},
+                guard: []guard{
+                    {operator: NotEqual, args: []expression{variable(0), variable(1)}},
+                },
+                body: []process{
+                    {functor:"member", args: []expression{
+                        variable(0), variable(2), variable(3),
+                    }},
+                },
+            },
+            wantN:  26,
+        },
     }{
         got, gotN, err := parseRule(tt.tokens)
         if err != tt.err {
