@@ -18,7 +18,9 @@ type Interpreter struct {
     varcounter int64
     numWorkers int
     program []rule
+    bindings bindings
     pool []process
+    suspensions map[variable][]process
 }
 
 // program is assumed static, ie no dynamic rule assertions
@@ -26,52 +28,106 @@ func NewInterpreter(program []rule, numWorkers int) *Interpreter {
     return &Interpreter{
         numWorkers: numWorkers,
         program: program,
+        bindings: bindings{},
+        suspensions: map[variable][]process{},
     }
 }
 
 func NewSingleThreadedInterpreter(program []rule) *Interpreter {
     return &Interpreter{
         program: program,
+        bindings: bindings{},
+        suspensions: map[variable][]process{},
     }
 }
 
 // returns bindings and boolean=true if deadlock detected
 func (i *Interpreter) interpretSinglethreaded(initial []process) (bindings, bool) {
-    globalBindings := bindings{}
     for _, p := range initial {
         i.putProcess(p)
     }
     for len(i.pool) > 0 {
         p := i.getProcess()
         if p.isPredefined() {
-            theta, suspend := i.execute(globalBindings, p)
-            if suspend {
-                i.pool = append(i.pool, p)
-                continue
+            theta, ok, suspendOn := i.execute(i.bindings, p)
+            if !ok {
+                if len(suspendOn) == 0 {
+                    i.putProcess(p)
+                    continue
+                }
+                // todo
             }
-            for k, v := range theta {
-                globalBindings[k] = v 
-            }
+            i.commitBindings(i.bindings, theta)
             continue
         }
         rules := i.getPossibleRules(p)
-        ok, theta, r1, suspendOn := i.reduce(globalBindings, p, rules)
+        ok, theta, r1, suspendOn := i.reduce(i.bindings, p, rules)
         if !ok {
             if len(suspendOn) == 0 {
-                i.pool = append(i.pool, p)
+                // if no suspensions, this process is guaranteed to never succeed
+                // don't put the process back into the pool
                 continue
             }
-            // todo: suspend processes until one of vars are bound
+            // suspend processes until one of vars are bound
+            for _, v := range suspendOn {
+                i.suspensions[v] = append(i.suspensions[v], p)
+            }
             continue
         }
-        // commit to updates
-        for k, v := range theta {
-            // todo: wake up suspended processes
-            globalBindings[k] = v
+        i.commitBindings(i.bindings, theta)
+        for _, p := range r1.body {
+            i.putProcess(p)
         }
-        i.pool = append(i.pool, r1.body...)
     }
-    return globalBindings, false
+    if len(i.suspensions) > 0 {
+        return nil, true
+    }
+    return i.bindings, false
+}
+
+// NOTE: these 3 are only called from main interpreter routine, or there will be trouble!
+func (i *Interpreter) commitBindings(b, theta bindings) {
+    for k, v := range theta {
+        b[k] = v 
+        // todo: make sure not to put processes back multiple times!
+        if list, ok := i.suspensions[k]; ok {
+            delete(i.suspensions, k)
+            for _, p := range list {
+                i.putProcess(p)
+            }
+        }
+    }
+}
+
+func (i *Interpreter) putProcess(p process) {
+    i.pool = append(i.pool, p)
+}
+
+// todo: its either this, or shuffle i.pool each time we add to it?
+func (i *Interpreter) getProcess() process {
+    n := rand.IntN(len(i.pool))
+    p := i.pool[n]
+    if n == len(i.pool)-1 {
+        i.pool = i.pool[:n]
+    } else {
+        i.pool = append(i.pool[:n], i.pool[n+1:]...)
+    }
+    return p
+}
+
+// as naive as possible; this can get optimised
+func (i *Interpreter) getPossibleRules(p process) []rule {
+    candidates := []rule{}
+    for _, r := range i.program {
+        if r.head.functor != p.functor {
+            continue
+        }
+        if r.head.arity() != p.arity() {
+            continue
+        }
+        candidates = append(candidates, r)
+    }
+    return candidates
 }
 
 type work struct {
@@ -122,10 +178,13 @@ func (i *Interpreter) interpret(initial []process) bindings {
         default:
             p := i.getProcess()
             if p.isPredefined() {
-                theta, suspend := i.execute(globalBindings, p)
-                if suspend {
-                    i.putProcess(p)
-                    continue
+                theta, ok, suspendOn := i.execute(globalBindings, p)
+                if !ok {
+                    if len(suspendOn) == 0 {
+                        i.putProcess(p)
+                        continue
+                    }
+                    // todo
                 }
                 outCh <- result{b: theta, p:p, success:true}
                 workInProgress++
@@ -158,73 +217,38 @@ func (i *Interpreter) handleResult(globalBindings bindings, res result) {
             return
         }
     }
-    for k, v := range res.b {
-        globalBindings[k] = v
-    }
+    i.commitBindings(globalBindings, res.b)
     for _, r := range res.body {
         i.putProcess(r)
     }
 }
 
-func (i *Interpreter) putProcess(p process) {
-    i.pool = append(i.pool, p)
-}
-
-// todo: its either this, or shuffle i.pool each time we add to it?
-func (i *Interpreter) getProcess() process {
-    n := rand.IntN(len(i.pool))
-    p := i.pool[n]
-    if n == len(i.pool)-1 {
-        i.pool = i.pool[:n]
-    } else {
-        i.pool = append(i.pool[:n], i.pool[n+1:]...)
-    }
-    return p
-}
-
-func (i *Interpreter) execute(b bindings, p process) (bindings, bool) {
+// returns updates, bool indicating success, and which vars to suspend on if any
+func (i *Interpreter) execute(b bindings, p process) (bindings, bool, []variable) {
     newb := bindings{}
     switch p.functor {
     case ":=":
         // X := Y   % assign Y to X in global bindings
         // todo: validation, occurs checks, etc..
-        // what if first arg is not a var?
         x := walk(b, p.args[0]).(variable)
         y := walk(b, p.args[1])
         newb[x] = y
     case "isplus":
         // isplus(X,Y,Z)    % X is Y + Z
-        // todo: this might fail/suspend?
-        // what if first arg is not a var?
         x := walk(b, p.args[0]).(variable)
         y := walk(b, p.args[1])
         z := walk(b, p.args[2])
         if _, isNum := y.(number); !isNum {
-            return nil, true
+            return nil, false, nil
         }
         if _, isNum := z.(number); !isNum {
-            return nil, true
+            return nil, false, nil
         }
         newb[x] = number(y.(number) + z.(number))
     default:
         panic(fmt.Sprintf("unknown predefined process %s", p.functor))
     }
-    return newb, false
-}
-
-// as naive as possible; this can get optimised
-func (i *Interpreter) getPossibleRules(p process) []rule {
-    candidates := []rule{}
-    for _, r := range i.program {
-        if r.head.functor != p.functor {
-            continue
-        }
-        if r.head.arity() != p.arity() {
-            continue
-        }
-        candidates = append(candidates, r)
-    }
-    return candidates
+    return newb, true, nil
 }
 
 func (i *Interpreter) workReduce(inCh <-chan work, outCh chan<- result) {
