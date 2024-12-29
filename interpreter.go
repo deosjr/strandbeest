@@ -35,7 +35,8 @@ func NewSingleThreadedInterpreter(program []rule) *Interpreter {
     }
 }
 
-func (i *Interpreter) interpretSinglethreaded(initial []process) bindings {
+// returns bindings and boolean=true if deadlock detected
+func (i *Interpreter) interpretSinglethreaded(initial []process) (bindings, bool) {
     globalBindings := bindings{}
     for _, p := range initial {
         i.putProcess(p)
@@ -54,18 +55,23 @@ func (i *Interpreter) interpretSinglethreaded(initial []process) bindings {
             continue
         }
         rules := i.getPossibleRules(p)
-        theta, r1, ok := i.reduce(globalBindings, p, rules)
+        ok, theta, r1, suspendOn := i.reduce(globalBindings, p, rules)
         if !ok {
-            i.pool = append(i.pool, p)
+            if len(suspendOn) == 0 {
+                i.pool = append(i.pool, p)
+                continue
+            }
+            // todo: suspend processes until one of vars are bound
             continue
         }
         // commit to updates
         for k, v := range theta {
+            // todo: wake up suspended processes
             globalBindings[k] = v
         }
         i.pool = append(i.pool, r1.body...)
     }
-    return globalBindings
+    return globalBindings, false
 }
 
 type work struct {
@@ -78,6 +84,7 @@ type result struct {
     p process
     body []process
     success bool
+    suspendOn []variable
 }
 
 func (i *Interpreter) interpret(initial []process) bindings {
@@ -223,34 +230,55 @@ func (i *Interpreter) getPossibleRules(p process) []rule {
 func (i *Interpreter) workReduce(inCh <-chan work, outCh chan<- result) {
     for w := range inCh {
         rules := i.getPossibleRules(w.p)
-        theta, r1, ok := i.reduce(w.b, w.p, rules)
+        ok, theta, r1, sus := i.reduce(w.b, w.p, rules)
         if !ok {
-            outCh <- result{p:w.p, success:false}
+            outCh <- result{p:w.p, success:false, suspendOn: sus}
             continue
         }
         outCh <- result{b:theta, p:w.p, body:r1.body, success:true}
     }
 }
 
-func (i *Interpreter) reduce(b bindings, p process, rules []rule) (bindings, rule, bool) {
+func (i *Interpreter) reduce(b bindings, p process, rules []rule) (bool, bindings, rule, []variable) {
     rand.Shuffle(len(rules), func(i, j int) {
 	    rules[i], rules[j] = rules[j], rules[i]
     })
+    m := map[variable]struct{}{}
 Loop:
     for _, r := range rules {
         r1 := i.freshCopy(r)
-        m, ok := cmatch(b, p, r1)
+        ok, updates, sus := cmatch(b, p, r1)
         if !ok {
+            if len(sus) == 0 {
+                continue
+            }
+            for _, v := range sus {
+                m[v] = struct{}{}
+            }
             continue
         }
+        guardsSucceed := true
         for _, g := range r1.guard {
-            if !guardMatch(b, m, g) {
-                continue Loop
+            ok, sus := guardMatch(b, updates, g)
+            if !ok {
+                guardsSucceed = false
+                if len(sus) == 0 {
+                    continue Loop
+                }
+                for _, v := range sus {
+                    m[v] = struct{}{}
+                }
             }
         }
-        return m, r1, true
+        if guardsSucceed {
+            return true, updates, r1, nil
+        }
     }
-    return nil, rule{}, false
+    var suspend []variable
+    for k := range m {
+        suspend = append(suspend, k)
+    }
+    return false, nil, rule{}, suspend
 }
 
 func (i *Interpreter) fresh() variable {
@@ -306,30 +334,51 @@ func (i *Interpreter) replaceFreshExp(b bindings, e expression) expression {
 }
 
 // assumes functor/arity already matching
-func cmatch(base bindings, p process, r rule) (bindings, bool) {
+// returns success boolean, updated bindings, and list vars to suspend on if any
+func cmatch(base bindings, p process, r rule) (bool, bindings, []variable) {
     updates := bindings{}
+    m := map[variable]struct{}{}
     for i:=0; i<p.arity(); i++ {
-        if !unify(base, updates, p.args[i], r.head.args[i]) {
-            return nil, false
+        success, suspend := unify(base, updates, p.args[i], r.head.args[i]) 
+        if !success {
+            if len(suspend) == 0 {
+                return false, nil, nil
+            }
+            for _, v := range suspend {
+                m[v] = struct{}{}
+            }
         }
     }
-    return updates, true
+    if len(m) == 0 {
+        return true, updates, nil
+    }
+    var suspend []variable
+    for k := range m {
+        suspend = append(suspend, k)
+    }
+    return false, updates, suspend
 }
 
-func guardMatch(base, updates bindings, g guard) bool {
+// returns success boolean and list vars to suspend on if any
+func guardMatch(base, updates bindings, g guard) (bool, []variable) {
     u := walk(base, walk(updates, g.args[0]))
     v := walk(base, walk(updates, g.args[1]))
     // guard args have to be fully instantiated, otherwise suspend
-    _, uok := u.(variable)
-    _, vok := u.(variable)
-    if uok || vok {
-        return false
+    var suspend []variable
+    if uvar, ok := u.(variable); ok {
+        suspend = append(suspend, uvar)
+    }
+    if vvar, ok := u.(variable); ok {
+        suspend = append(suspend, vvar)
+    }
+    if len(suspend) > 0 {
+        return false, suspend
     }
     switch g.operator {
     case Equal:
-        return u == v
+        return u == v, nil
     case NotEqual:
-        return u != v
+        return u != v, nil
     }
     panic("unknown operator in guard match")
 }
@@ -347,33 +396,51 @@ func walk(b bindings, e expression) expression {
 }
 
 // unify reads from base bindings and adds to updates in place
-func unify(base, updates bindings, u, v expression) bool {
+// returns a success boolean and a list of variables on which to suspend, if any
+func unify(base, updates bindings, u, v expression) (bool, []variable) {
     if u == underscore || v == underscore {
-        return true
+        return true, nil
     }
     u = walk(base, walk(updates, u))
     v = walk(base, walk(updates, v))
     if u == v {
-        return true
+        return true, nil
     }
     // variables in the rule head match anything
     if vvar, ok := v.(variable); ok {
         updates[vvar] = u
-        return true
+        return true, nil
     }
     // data-flow synchronization: if we have a var on the left, we should suspend
-    if _, ok := u.(variable); ok {
-        return false
+    if uvar, ok := u.(variable); ok {
+        return false, []variable{uvar}
     }
     // remember, emptylist is a special case!
     uList, uIsList := u.(list)
     vList, vIsList := v.(list)
     if uIsList && vIsList {
-        p := unify(base, updates, uList.head, vList.head)
-        q := unify(base, updates, uList.tail, vList.tail)
-        return p && q
+        p, susp := unify(base, updates, uList.head, vList.head)
+        q, susq := unify(base, updates, uList.tail, vList.tail)
+        if p && q {
+            return true, nil
+        }
+        if susp == nil || susq == nil {
+            return false, nil
+        }
+        m := map[variable]struct{}{}
+        for _, v := range susp {
+            m[v] = struct{}{}
+        }
+        for _, v := range susq {
+            m[v] = struct{}{}
+        }
+        merged := []variable{}
+        for k := range m {
+            merged = append(merged, k)
+        }
+        return false, merged
     }
-    return false
+    return false, nil
 }
 
 func copyBindings(b bindings) bindings {

@@ -57,7 +57,7 @@ func TestCMatch(t *testing.T) {
             }},
         },
     }
-    theta, ok := cmatch(base, p, r)
+    ok, theta, _ := cmatch(base, p, r)
     if !ok {
         t.Fatalf("expected succesful cmatch but got failure")
     }
@@ -79,9 +79,30 @@ func TestInterpretSingleThreaded(t *testing.T) {
             l, list{head:number(2), tail: list{head:number(3), tail:emptylist}},
         }},
     }
-    res := i.interpretSinglethreaded(q)
+    res, deadlocked := i.interpretSinglethreaded(q)
+    if deadlocked {
+        t.Fatalf("deadlocked!")
+    }
     got := walk(res, r)
     if got != number(6) {
         t.Fatalf("expected 6 but got %s", got)
+    }
+}
+
+func TestInterpretSingleThreadedDeadlock(t *testing.T) {
+    s := MustParseRules(`
+    member(X,[X1|Rest],R) :-
+        X =\= X1 | member(X,Rest,R).
+    member(X,[X1|_],R) :-
+        X == X1 | R := true.
+    member(_, [], R) :- R := false.`)
+    i := NewSingleThreadedInterpreter(s)
+    // this would work in Prolog, but not in FGHC (suspends on X)
+    q, _ := MustParseProcesses("member(X, [1,2,3], R)")
+    // todo: one var assigned in mustparseprocesses
+    i.fresh()
+    res, deadlocked := i.interpretSinglethreaded(q)
+    if !deadlocked {
+        t.Fatalf("expected deadlock but got %v", res)
     }
 }
