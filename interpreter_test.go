@@ -84,6 +84,8 @@ func TestInterpretSingleThreaded(t *testing.T) {
         t.Fatalf("deadlocked!")
     }
     got := walk(res, r)
+    // todo: very seldomly I get this error:
+    // interpreter_test.go:88: expected 6 but got %!s(main.variable=20)
     if got != number(6) {
         t.Fatalf("expected 6 but got %s", got)
     }
@@ -119,6 +121,20 @@ func TestInterpretSingleThreadedDeadlockOnGuard(t *testing.T) {
     // this would work in Prolog, but not in FGHC (suspends on X)
     q, _ := MustParseProcesses("member(1, [X], R)")
     // todo: two vars assigned in mustparseprocesses
+    i.fresh()
+    i.fresh()
+    res, deadlocked := i.interpretSinglethreaded(q)
+    if !deadlocked {
+        t.Fatalf("expected deadlock but got %v", res)
+    }
+}
+
+func TestInterpretSingleThreadedDeadlockOnPrimitive(t *testing.T) {
+    s := MustParseRules(`test(X,Y) :- isplus(Y, X, 1).`)
+    i := NewSingleThreadedInterpreter(s)
+    // this would work in Prolog, but not in FGHC (suspends on X)
+    q, _ := MustParseProcesses("test(X, Y)")
+    // todo: one vars assigned in mustparseprocesses
     i.fresh()
     i.fresh()
     res, deadlocked := i.interpretSinglethreaded(q)

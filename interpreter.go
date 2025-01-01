@@ -52,10 +52,15 @@ func (i *Interpreter) interpretSinglethreaded(initial []process) (bindings, bool
             theta, ok, suspendOn := i.execute(i.bindings, p)
             if !ok {
                 if len(suspendOn) == 0 {
-                    i.putProcess(p)
+                    // if no suspensions, this process is guaranteed to never succeed
+                    // don't put the process back into the pool
                     continue
                 }
-                // todo
+                // suspend processes until one of vars are bound
+                for _, v := range suspendOn {
+                    i.suspensions[v] = append(i.suspensions[v], p)
+                }
+                continue
             }
             i.commitBindings(i.bindings, theta)
             continue
@@ -230,21 +235,39 @@ func (i *Interpreter) execute(b bindings, p process) (bindings, bool, []variable
     case ":=":
         // X := Y   % assign Y to X in global bindings
         // todo: validation, occurs checks, etc..
-        x := walk(b, p.args[0]).(variable)
+        x := walk(b, p.args[0])
+        xvar, ok := x.(variable)
+        if !ok {
+            panic(fmt.Sprintf("expected variable but got %s", x.PrintExpression()))
+        }
         y := walk(b, p.args[1])
-        newb[x] = y
+        newb[xvar] = y
     case "isplus":
         // isplus(X,Y,Z)    % X is Y + Z
-        x := walk(b, p.args[0]).(variable)
+        x := walk(b, p.args[0])
+        xvar, ok := x.(variable)
+        if !ok {
+            panic(fmt.Sprintf("expected variable but got %s", x.PrintExpression()))
+        }
         y := walk(b, p.args[1])
         z := walk(b, p.args[2])
+        var suspensions []variable
+        if yvar, yok := y.(variable); yok {
+            suspensions = append(suspensions, yvar)
+        }
+        if zvar, zok := z.(variable); zok {
+            suspensions = append(suspensions, zvar)
+        }
+        if len(suspensions) > 0 {
+            return nil, false, suspensions
+        }
         if _, isNum := y.(number); !isNum {
             return nil, false, nil
         }
         if _, isNum := z.(number); !isNum {
             return nil, false, nil
         }
-        newb[x] = number(y.(number) + z.(number))
+        newb[xvar] = number(y.(number) + z.(number))
     default:
         panic(fmt.Sprintf("unknown predefined process %s", p.functor))
     }
