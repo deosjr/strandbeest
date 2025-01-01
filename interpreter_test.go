@@ -89,7 +89,7 @@ func TestInterpretSingleThreaded(t *testing.T) {
     }
 }
 
-func TestInterpretSingleThreadedDeadlock(t *testing.T) {
+func TestInterpretSingleThreadedDeadlockOnMatch(t *testing.T) {
     s := MustParseRules(`
     member(X,[X1|Rest],R) :-
         X =\= X1 | member(X,Rest,R).
@@ -99,7 +99,27 @@ func TestInterpretSingleThreadedDeadlock(t *testing.T) {
     i := NewSingleThreadedInterpreter(s)
     // this would work in Prolog, but not in FGHC (suspends on X)
     q, _ := MustParseProcesses("member(X, [1,2,3], R)")
-    // todo: one var assigned in mustparseprocesses
+    // todo: two vars assigned in mustparseprocesses
+    i.fresh()
+    i.fresh()
+    res, deadlocked := i.interpretSinglethreaded(q)
+    if !deadlocked {
+        t.Fatalf("expected deadlock but got %v", res)
+    }
+}
+
+func TestInterpretSingleThreadedDeadlockOnGuard(t *testing.T) {
+    s := MustParseRules(`
+    member(X,[X1|Rest],R) :-
+        X =\= X1 | member(X,Rest,R).
+    member(X,[X1|_],R) :-
+        X == X1 | R := true.
+    member(_, [], R) :- R := false.`)
+    i := NewSingleThreadedInterpreter(s)
+    // this would work in Prolog, but not in FGHC (suspends on X)
+    q, _ := MustParseProcesses("member(1, [X], R)")
+    // todo: two vars assigned in mustparseprocesses
+    i.fresh()
     i.fresh()
     res, deadlocked := i.interpretSinglethreaded(q)
     if !deadlocked {

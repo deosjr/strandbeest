@@ -392,7 +392,7 @@ func guardMatch(base, updates bindings, g guard) (bool, []variable) {
     if uvar, ok := u.(variable); ok {
         suspend = append(suspend, uvar)
     }
-    if vvar, ok := u.(variable); ok {
+    if vvar, ok := v.(variable); ok {
         suspend = append(suspend, vvar)
     }
     if len(suspend) > 0 {
