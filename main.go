@@ -25,7 +25,7 @@ reduce(P)
         if (not COMMIT) then put_process(P)         { return process to pool }
 
 where a process looks like functor(Arg1, Arg2...)
-and CMatch takes a process and a rule, returning Theta if match succeeds given 
+and CMatch takes a process and a rule, returning Theta if match succeeds given
 the set of assignments Theta, and the guard also succeeds. Otherwise suspend.
 Predefined processes are builtin functions.
 Vars can only occur once in head of a rule; guards are used to check equality.
@@ -50,11 +50,11 @@ Result: R = 6
 */
 
 import (
-    "fmt"
+	"fmt"
 )
 
 func main() {
-    s := MustParseRules(`
+	s := MustParseRules(`
     sum(L, Sum) :- sum1(L, 0, Sum).
     sum1([X|Xs], A, Sum) :- 
         isplus(A1, A, X),
@@ -62,39 +62,34 @@ func main() {
     sum1([], A, Sum) :-
         Sum := A.`)
 
-    for _, r := range s {
-        fmt.Printf("%s\n", r)
-    }
-    numWorkers := 10
-    i := NewInterpreter(s, numWorkers)
-    q, b := MustParseProcesses("sum([1|L],R), L := [2,3]")
-    // todo: two vars assigned in mustparseprocesses
-    i.fresh()
-    i.fresh()
-    r := b["R"]
-    fmt.Printf("%s\n", q)
-    res := i.interpret(q)
-    out := walk(res, r)
-    fmt.Printf("R = %s\n", out.PrintExpression())
-    
-    fmt.Println("-------------------")
+	for _, r := range s {
+		fmt.Printf("%s\n", r)
+	}
+	numWorkers := 10
+	i := NewInterpreter(s, numWorkers)
+	q, b := i.MustParseProcesses("sum([1|L],R), L := [2,3]")
+	r := b["R"]
+	fmt.Printf("%s\n", q)
+	res := i.interpret(q)
+	out := walk(res, r)
+	fmt.Printf("R = %s\n", out.PrintExpression())
 
-    s = MustParseRules(`
+	fmt.Println("-------------------")
+
+	s = MustParseRules(`
     member(X,[X1|Rest],R) :-
         X =\= X1 | member(X,Rest,R).
     member(X,[X1|_],R) :-
         X == X1 | R := true.
     member(_, [], R) :- R := false.`)
-    for _, r := range s {
-        fmt.Printf("%s\n", r)
-    }
-    i = NewInterpreter(s, numWorkers)
-    q, b = MustParseProcesses("member(2, [1,2,3], R)")
-    // todo: one var assigned in mustparseprocesses
-    i.fresh()
-    r = b["R"]
-    fmt.Printf("%s\n", q)
-    res = i.interpret(q)
-    out = walk(res, r)
-    fmt.Printf("R = %s\n", out.PrintExpression())
+	for _, r := range s {
+		fmt.Printf("%s\n", r)
+	}
+	i = NewInterpreter(s, numWorkers)
+	q, b = i.MustParseProcesses("member(2, [1,2,3], R)")
+	r = b["R"]
+	fmt.Printf("%s\n", q)
+	res = i.interpret(q)
+	out = walk(res, r)
+	fmt.Printf("R = %s\n", out.PrintExpression())
 }
