@@ -2,6 +2,7 @@ package main
 
 import (
 	"testing"
+	"time"
 )
 
 var (
@@ -131,5 +132,67 @@ func TestInterpretSingleThreadedDeadlockOnPrimitive(t *testing.T) {
 	res, deadlocked := i.interpretSinglethreaded(q)
 	if !deadlocked {
 		t.Fatalf("expected deadlock but got %v", res)
+	}
+}
+
+// A process that suspends on the same variable twice (e.g. isplus(X, A, A))
+// must be woken exactly once when that variable is bound. Without dedup it
+// gets appended to the suspension bucket twice, runs twice, and the second
+// run panics in execute() because X is already bound to a number.
+func TestInterpretSingleThreadedSuspendsOnSameVarTwice(t *testing.T) {
+	s := MustParseRules(`test(X) :- isplus(X, A, A), A := 5.`)
+	i := NewSingleThreadedInterpreter(s)
+	q, b := i.MustParseProcesses("test(X)")
+	x := b["X"]
+
+	res, deadlocked := i.interpretSinglethreaded(q)
+	if deadlocked {
+		t.Fatalf("unexpected deadlock")
+	}
+	got := walk(res, x)
+	if got != number(10) {
+		t.Fatalf("expected 10 but got %s", got.PrintExpression())
+	}
+}
+
+// A process that suspends on two distinct variables ends up registered in
+// both suspension buckets. When one of those variables is bound, the entry
+// in the other bucket becomes stale; if the process suspends again it
+// re-registers, and the next bind on the second var wakes it twice.
+func TestInterpretSingleThreadedSuspendsOnTwoVars(t *testing.T) {
+	s := MustParseRules(`test(X) :- isplus(X, A, B), A := 5, B := 7.`)
+	i := NewSingleThreadedInterpreter(s)
+	q, b := i.MustParseProcesses("test(X)")
+	x := b["X"]
+
+	res, deadlocked := i.interpretSinglethreaded(q)
+	if deadlocked {
+		t.Fatalf("unexpected deadlock")
+	}
+	got := walk(res, x)
+	if got != number(12) {
+		t.Fatalf("expected 12 but got %s", got.PrintExpression())
+	}
+}
+
+// A predefined process whose ground arguments make it impossible (e.g.
+// isplus where the addends are non-numbers) must be dropped, not retried.
+// The single-threaded path already does this; the multi-threaded path used
+// to put the process back into the queue, livelocking on it forever.
+func TestInterpretFailedPredefinedTerminates(t *testing.T) {
+	s := MustParseRules(`test(X) :- isplus(X, true, false).`)
+	i := NewInterpreter(s, 2)
+	q, _ := i.MustParseProcesses("test(X)")
+
+	done := make(chan struct{})
+	go func() {
+		i.interpret(q)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("interpret did not terminate: failed predefined process is being re-queued forever")
 	}
 }

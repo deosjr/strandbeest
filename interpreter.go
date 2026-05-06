@@ -19,8 +19,54 @@ type Interpreter struct {
 	numWorkers  int
 	program     []rule
 	bindings    bindings
-	pool        sync.Pool
-	suspensions map[variable][]process
+	queue       processQueue
+	suspensions map[variable][]*suspendedProcess
+}
+
+// A process can suspend on multiple variables at once. We share a single
+// *suspendedProcess across all of its buckets so that waking via one var
+// can mark the others stale and remove them. consumed guards against
+// double-wakes if removal races a wake on a sibling bucket.
+type suspendedProcess struct {
+	p        process
+	vars     []variable
+	consumed bool
+}
+
+// FIFO ring buffer of processes awaiting reduction. Grows on demand;
+// never shrinks (workloads here are bounded by program size).
+type processQueue struct {
+	buf  []process
+	head int
+	size int
+}
+
+func (q *processQueue) push(p process) {
+	if q.size == len(q.buf) {
+		newCap := len(q.buf) * 2
+		if newCap == 0 {
+			newCap = 16
+		}
+		newBuf := make([]process, newCap)
+		for i := 0; i < q.size; i++ {
+			newBuf[i] = q.buf[(q.head+i)%len(q.buf)]
+		}
+		q.buf = newBuf
+		q.head = 0
+	}
+	q.buf[(q.head+q.size)%len(q.buf)] = p
+	q.size++
+}
+
+func (q *processQueue) pop() (process, bool) {
+	if q.size == 0 {
+		return process{}, false
+	}
+	p := q.buf[q.head]
+	q.buf[q.head] = process{}
+	q.head = (q.head + 1) % len(q.buf)
+	q.size--
+	return p, true
 }
 
 // program is assumed static, ie no dynamic rule assertions
@@ -29,7 +75,7 @@ func NewInterpreter(program []rule, numWorkers int) *Interpreter {
 		numWorkers:  numWorkers,
 		program:     program,
 		bindings:    bindings{},
-		suspensions: map[variable][]process{},
+		suspensions: map[variable][]*suspendedProcess{},
 	}
 }
 
@@ -37,7 +83,7 @@ func NewSingleThreadedInterpreter(program []rule) *Interpreter {
 	return &Interpreter{
 		program:     program,
 		bindings:    bindings{},
-		suspensions: map[variable][]process{},
+		suspensions: map[variable][]*suspendedProcess{},
 	}
 }
 
@@ -59,10 +105,7 @@ func (i *Interpreter) interpretSinglethreaded(initial []process) (bindings, bool
 					// don't put the process back into the pool
 					continue
 				}
-				// suspend processes until one of vars are bound
-				for _, v := range suspendOn {
-					i.suspensions[v] = append(i.suspensions[v], p)
-				}
+				i.suspend(p, suspendOn)
 				continue
 			}
 			i.commitBindings(i.bindings, theta)
@@ -76,10 +119,7 @@ func (i *Interpreter) interpretSinglethreaded(initial []process) (bindings, bool
 				// don't put the process back into the pool
 				continue
 			}
-			// suspend processes until one of vars are bound
-			for _, v := range suspendOn {
-				i.suspensions[v] = append(i.suspensions[v], p)
-			}
+			i.suspend(p, suspendOn)
 			continue
 		}
 		i.commitBindings(i.bindings, theta)
@@ -97,26 +137,66 @@ func (i *Interpreter) interpretSinglethreaded(initial []process) (bindings, bool
 func (i *Interpreter) commitBindings(b, theta bindings) {
 	for k, v := range theta {
 		b[k] = v
-		// todo: make sure not to put processes back multiple times!
-		if list, ok := i.suspensions[k]; ok {
-			delete(i.suspensions, k)
-			for _, p := range list {
-				i.putProcess(p)
+		list, ok := i.suspensions[k]
+		if !ok {
+			continue
+		}
+		delete(i.suspensions, k)
+		for _, sp := range list {
+			if sp.consumed {
+				continue
 			}
+			sp.consumed = true
+			// drop sp from any sibling buckets so a later commit on
+			// one of those vars doesn't re-queue an already-woken process
+			for _, vv := range sp.vars {
+				if vv == k {
+					continue
+				}
+				bucket := i.suspensions[vv]
+				for j, x := range bucket {
+					if x == sp {
+						i.suspensions[vv] = append(bucket[:j], bucket[j+1:]...)
+						break
+					}
+				}
+				if len(i.suspensions[vv]) == 0 {
+					delete(i.suspensions, vv)
+				}
+			}
+			i.putProcess(sp.p)
 		}
 	}
 }
 
+// suspend registers p as waiting on the given variables, deduping repeats
+// (e.g. isplus(X, A, A) yields suspendOn = [A, A]).
+func (i *Interpreter) suspend(p process, vars []variable) {
+	seen := make(map[variable]struct{}, len(vars))
+	deduped := make([]variable, 0, len(vars))
+	for _, v := range vars {
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		deduped = append(deduped, v)
+	}
+	sp := &suspendedProcess{p: p, vars: deduped}
+	for _, v := range deduped {
+		i.suspensions[v] = append(i.suspensions[v], sp)
+	}
+}
+
 func (i *Interpreter) putProcess(p process) {
-	i.pool.Put(&p)
+	i.Lock()
+	defer i.Unlock()
+	i.queue.push(p)
 }
 
 func (i *Interpreter) getProcess() (process, bool) {
-	p := i.pool.Get()
-	if p == nil {
-		return process{}, false
-	}
-	return *p.(*process), true
+	i.Lock()
+	defer i.Unlock()
+	return i.queue.pop()
 }
 
 // as naive as possible; this can get optimised
@@ -186,10 +266,10 @@ func (i *Interpreter) interpret(initial []process) bindings {
 				theta, ok, suspendOn := i.execute(globalBindings, p)
 				if !ok {
 					if len(suspendOn) == 0 {
-						i.putProcess(p)
+						// process is guaranteed to never succeed, drop it
 						continue
 					}
-					// todo
+					// todo: suspend on vars
 				}
 				outCh <- result{b: theta, p: p, success: true}
 				workInProgress++
