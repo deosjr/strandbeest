@@ -105,6 +105,9 @@ func tokenize(s string) []token {
 			}
 		}
 		i := strings.IndexAny(s, "\t\n (),|].")
+		if i == -1 {
+			i = len(s)
+		}
 		out = append(out, token(s[:i]))
 		s = s[i:]
 		s = strings.TrimSpace(s)

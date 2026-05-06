@@ -85,8 +85,6 @@ func TestInterpretSingleThreaded(t *testing.T) {
 		t.Fatalf("deadlocked!")
 	}
 	got := walk(res, r)
-	// todo: very seldomly I get this error:
-	// interpreter_test.go:88: expected 6 but got %!s(main.variable=20)
 	if got != number(6) {
 		t.Fatalf("expected 6 but got %s", got)
 	}
@@ -132,6 +130,24 @@ func TestInterpretSingleThreadedDeadlockOnPrimitive(t *testing.T) {
 	res, deadlocked := i.interpretSinglethreaded(q)
 	if !deadlocked {
 		t.Fatalf("expected deadlock but got %v", res)
+	}
+}
+
+func TestInterpret(t *testing.T) {
+	s := MustParseRules(`
+    sum(L, Sum) :- sum1(L, 0, Sum).
+    sum1([X|Xs], A, Sum) :-
+        isplus(A1, A, X),
+        sum1(Xs, A1, Sum).
+    sum1([], A, Sum) :-
+        Sum := A.`)
+	i := NewInterpreter(s, 4)
+	q, b := i.MustParseProcesses("sum([1|L], R), L := [2,3]")
+	r := b["R"]
+	res := i.interpret(q)
+	got := walk(res, r)
+	if got != number(6) {
+		t.Fatalf("expected 6 but got %s", got.PrintExpression())
 	}
 }
 

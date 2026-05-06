@@ -26,29 +26,47 @@ func MustParseRules(input string) []rule {
 	return rules
 }
 
-func (i *Interpreter) MustParseProcesses(input string) ([]process, map[string]variable) {
+func (i *Interpreter) ParseProcesses(input string) ([]process, map[string]variable, error) {
 	tokens := tokenize(input)
-	processes := []process{}
-	b := map[string]variable{}
+	parsed := []process{}
+	named := map[string]variable{}
 	for len(tokens) > 0 {
-		p, n, err := parseProcess(b, tokens)
+		p, n, err := parseProcess(named, tokens)
 		if err != nil {
-			panic(err)
+			return nil, nil, err
 		}
-		processes = append(processes, p)
+		parsed = append(parsed, p)
 		if len(tokens) > n {
 			if tokens[n] != Comma {
-				panic("expected comma")
+				return nil, nil, syntaxError{"expected comma"}
 			}
 			tokens = tokens[n+1:]
 			continue
 		}
 		tokens = tokens[n:]
 	}
-	for range len(b) {
-		i.fresh()
+	// Parser numbers vars locally from 0; rename to fresh global ids so
+	// they can't collide with vars allocated elsewhere on the interpreter.
+	rename := bindings{}
+	out := make([]process, len(parsed))
+	for j, p := range parsed {
+		out[j] = i.replaceFresh(rename, p)
 	}
-	return processes, b
+	renamed := map[string]variable{}
+	for name, v := range named {
+		if nv, ok := rename[v]; ok {
+			renamed[name] = nv.(variable)
+		}
+	}
+	return out, renamed, nil
+}
+
+func (i *Interpreter) MustParseProcesses(input string) ([]process, map[string]variable) {
+	p, b, err := i.ParseProcesses(input)
+	if err != nil {
+		panic(err)
+	}
+	return p, b
 }
 
 // parseRule returns a rule, amount of tokens parsed, and error
@@ -77,6 +95,9 @@ func parseRule(tokens []token) (rule, int, error) {
 		}
 		body = append(body, r)
 		consumed += n
+		if consumed >= len(tokens) {
+			return rule{}, 0, syntaxError{"unexpected end of input in rule body"}
+		}
 		if tokens[consumed] == Period {
 			return rule{head: head, guard: guards, body: body}, consumed + 1, nil
 		}

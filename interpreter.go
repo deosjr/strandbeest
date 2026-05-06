@@ -18,9 +18,15 @@ type Interpreter struct {
 	varcounter  int64
 	numWorkers  int
 	program     []rule
+	rulesByHead map[ruleKey][]rule
 	bindings    bindings
 	queue       processQueue
 	suspensions map[variable][]*suspendedProcess
+}
+
+type ruleKey struct {
+	functor string
+	arity   int
 }
 
 // A process can suspend on multiple variables at once. We share a single
@@ -74,6 +80,7 @@ func NewInterpreter(program []rule, numWorkers int) *Interpreter {
 	return &Interpreter{
 		numWorkers:  numWorkers,
 		program:     program,
+		rulesByHead: indexRules(program),
 		bindings:    bindings{},
 		suspensions: map[variable][]*suspendedProcess{},
 	}
@@ -82,9 +89,19 @@ func NewInterpreter(program []rule, numWorkers int) *Interpreter {
 func NewSingleThreadedInterpreter(program []rule) *Interpreter {
 	return &Interpreter{
 		program:     program,
+		rulesByHead: indexRules(program),
 		bindings:    bindings{},
 		suspensions: map[variable][]*suspendedProcess{},
 	}
+}
+
+func indexRules(program []rule) map[ruleKey][]rule {
+	idx := map[ruleKey][]rule{}
+	for _, r := range program {
+		k := ruleKey{r.head.functor, r.head.arity()}
+		idx[k] = append(idx[k], r)
+	}
+	return idx
 }
 
 // returns bindings and boolean=true if deadlock detected
@@ -199,19 +216,16 @@ func (i *Interpreter) getProcess() (process, bool) {
 	return i.queue.pop()
 }
 
-// as naive as possible; this can get optimised
+// Returns a fresh slice (reduce shuffles in place, and workers run reduce
+// concurrently — they must not share the underlying array).
 func (i *Interpreter) getPossibleRules(p process) []rule {
-	candidates := []rule{}
-	for _, r := range i.program {
-		if r.head.functor != p.functor {
-			continue
-		}
-		if r.head.arity() != p.arity() {
-			continue
-		}
-		candidates = append(candidates, r)
+	src := i.rulesByHead[ruleKey{p.functor, p.arity()}]
+	if len(src) == 0 {
+		return nil
 	}
-	return candidates
+	dst := make([]rule, len(src))
+	copy(dst, src)
+	return dst
 }
 
 type work struct {
@@ -275,13 +289,19 @@ func (i *Interpreter) interpret(initial []process) bindings {
 				workInProgress++
 				continue
 			}
-			// todo: think about how to pass bindings around
-			// possible race condition:
-			// - one reduce starts reading from bindings
-			// - handling process updates bindings halfway
-			// conclusion: have to somehow pass copies/nested references
-			// lets start with ugly/slow map copies and go from there
-			// note: this race can still happen! handler will have to check and reject solutions?
+			// Workers only ever read from their snapshot; main is the
+			// sole writer to globalBindings. Snapshots can become stale
+			// while a worker is reducing, but FGHC semantics make this
+			// sound: the store grows monotonically (single-assignment),
+			// cmatch's theta keys are typically rule-side fresh vars
+			// (which never appear in globalBindings), and guards only
+			// resolve over ground terms, so a guard that succeeds at S1
+			// still succeeds at any S2 ⊇ S1. The one edge case is rule
+			// heads with repeated vars (e.g. foo(X, X)) where cmatch can
+			// write a process-side var into theta; the clash check in
+			// handleResult catches that and re-queues the loser.
+			// TODO(perf): we copy on every send. Could refresh a shared
+			// snapshot only on commit instead.
 			b := copyBindings(globalBindings)
 			inCh <- work{b, p}
 			workInProgress++
@@ -297,7 +317,12 @@ func (i *Interpreter) handleResult(globalBindings bindings, res result) {
 	}
 	for k := range res.b {
 		if _, ok := globalBindings[k]; ok {
-			// single-assignment means if we find a clash, we return the work
+			// Two reduces ran against snapshots that didn't see each
+			// other's commits. Reduce thetas usually have fresh keys
+			// (no clash possible), but rule heads like foo(X, X) can
+			// write a process-side var, and concurrent execute()s on
+			// the same target var also clash here. Re-queue the loser
+			// to re-decide against the now-newer globalBindings.
 			i.putProcess(res.p)
 			return
 		}
@@ -318,7 +343,9 @@ func (i *Interpreter) execute(b bindings, p process) (bindings, bool, []variable
 		x := walk(b, p.args[0])
 		xvar, ok := x.(variable)
 		if !ok {
-			panic(fmt.Sprintf("expected variable but got %s", x.PrintExpression()))
+			// LHS already bound to a value: under single-assignment this
+			// process can't progress. Drop it rather than panic.
+			return nil, false, nil
 		}
 		y := walk(b, p.args[1])
 		newb[xvar] = y
@@ -327,7 +354,7 @@ func (i *Interpreter) execute(b bindings, p process) (bindings, bool, []variable
 		x := walk(b, p.args[0])
 		xvar, ok := x.(variable)
 		if !ok {
-			panic(fmt.Sprintf("expected variable but got %s", x.PrintExpression()))
+			return nil, false, nil
 		}
 		y := walk(b, p.args[1])
 		z := walk(b, p.args[2])
